@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Bell, Slack, Mail, AlertTriangle, CheckCircle, Clock, Settings as SettingsIcon } from 'lucide-react';
 import { AlertConfig, AlertState } from '../types';
+import { AlertingService } from '../services/alertingService';
 import toast from 'react-hot-toast';
 
 interface AlertingConfigProps {
@@ -12,6 +13,7 @@ interface AlertingConfigProps {
 
 export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAlertState }: AlertingConfigProps) {
   const [activeSection, setActiveSection] = useState('overview');
+  const [testingConnections, setTestingConnections] = useState(false);
 
   const updateAlertConfig = (section: keyof AlertConfig, field: string, value: any) => {
     setAlertConfig({
@@ -36,32 +38,90 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
     });
   };
 
-  const testSlackConnection = async () => {
-    if (!alertConfig.channels.slack.botToken) {
-      toast.error('Please enter Slack Bot Token first');
+  const testConnections = async () => {
+    if (!alertConfig.channels.slack.botToken && !alertConfig.channels.email.senderEmail) {
+      toast.error('Please configure at least one notification channel first');
       return;
     }
     
-    toast.loading('Testing Slack connection...');
-    // Simulate API call
-    setTimeout(() => {
+    setTestingConnections(true);
+    toast.loading('Testing connections...');
+    
+    try {
+      const alertingService = new AlertingService(alertConfig);
+      const results = await alertingService.testConnections();
+      
       toast.dismiss();
-      toast.success('Slack connection test successful!');
-    }, 2000);
+      
+      if (results.slack && alertConfig.channels.slack.enabled) {
+        toast.success('Slack connection successful!');
+      } else if (alertConfig.channels.slack.enabled) {
+        toast.error('Slack connection failed - check your bot token and permissions');
+      }
+      
+      if (results.email && alertConfig.channels.email.enabled) {
+        toast.success('Email connection successful!');
+      } else if (alertConfig.channels.email.enabled) {
+        toast.error('Email connection failed - check your credentials');
+      }
+      
+      if (results.groundcover) {
+        toast.success('Groundcover logging connection successful!');
+      } else {
+        toast.error('Groundcover logging connection failed - check your API key');
+      }
+      
+    } catch (error) {
+      toast.dismiss();
+      toast.error('Connection test failed');
+      console.error('Connection test error:', error);
+    } finally {
+      setTestingConnections(false);
+    }
   };
 
-  const testEmailConnection = async () => {
-    if (!alertConfig.channels.email.senderEmail || !alertConfig.channels.email.appPassword) {
-      toast.error('Please enter email credentials first');
+  const sendTestAlert = async () => {
+    if (!alertConfig.enabled) {
+      toast.error('Alerting is disabled. Enable it first.');
       return;
     }
+
+    toast.loading('Sending test alert...');
     
-    toast.loading('Testing email connection...');
-    // Simulate API call
-    setTimeout(() => {
+    try {
+      const alertingService = new AlertingService(alertConfig);
+      
+      // Send test alert to all configured channels
+      if (alertConfig.channels.slack.enabled && alertConfig.channels.slack.botToken) {
+        const slackService = new (await import('../services/slackService')).SlackService(alertConfig.channels.slack.botToken);
+        await slackService.sendAlert(
+          alertConfig.channels.slack.alertChannelId,
+          'test-environment',
+          'test-cluster',
+          'This is a test alert from the SRE Monitoring Dashboard'
+        );
+      }
+      
+      if (alertConfig.channels.email.enabled && alertConfig.channels.email.senderEmail) {
+        const emailService = new (await import('../services/emailService')).EmailService(
+          alertConfig.channels.email.senderEmail,
+          alertConfig.channels.email.appPassword
+        );
+        await emailService.sendAlert(
+          alertConfig.channels.email.recipients,
+          'test-environment',
+          'test-cluster',
+          'This is a test alert from the SRE Monitoring Dashboard'
+        );
+      }
+      
       toast.dismiss();
-      toast.success('Email connection test successful!');
-    }, 2000);
+      toast.success('Test alert sent successfully!');
+    } catch (error) {
+      toast.dismiss();
+      toast.error('Failed to send test alert');
+      console.error('Test alert error:', error);
+    }
   };
 
   const clearAlertState = () => {
@@ -89,6 +149,23 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
           </div>
           
           <div className="flex items-center space-x-3">
+            <button
+              onClick={testConnections}
+              disabled={testingConnections}
+              className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              <CheckCircle className="w-4 h-4" />
+              <span>{testingConnections ? 'Testing...' : 'Test Connections'}</span>
+            </button>
+            
+            <button
+              onClick={sendTestAlert}
+              className="flex items-center space-x-2 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors"
+            >
+              <AlertTriangle className="w-4 h-4" />
+              <span>Send Test Alert</span>
+            </button>
+            
             <div className={`flex items-center space-x-2 px-3 py-2 rounded-lg ${
               alertConfig.enabled ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
             }`}>
@@ -198,6 +275,38 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
                     </button>
                   </div>
                 )}
+
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h4 className="font-medium text-blue-900 mb-3">Integration Status</h4>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-700">Slack Integration</span>
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        alertConfig.channels.slack.enabled && alertConfig.channels.slack.botToken
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        {alertConfig.channels.slack.enabled && alertConfig.channels.slack.botToken ? 'Configured' : 'Not Configured'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-700">Email Integration</span>
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        alertConfig.channels.email.enabled && alertConfig.channels.email.senderEmail
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        {alertConfig.channels.email.enabled && alertConfig.channels.email.senderEmail ? 'Configured' : 'Not Configured'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-700">Groundcover Logging</span>
+                      <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-800">
+                        Active
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -216,10 +325,21 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
                   </label>
                 </div>
 
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h4 className="font-medium text-blue-900 mb-2">Setup Instructions</h4>
+                  <ol className="text-sm text-blue-800 space-y-1">
+                    <li>1. Create a Slack app at <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" className="underline">api.slack.com/apps</a></li>
+                    <li>2. Add the "chat:write" OAuth scope</li>
+                    <li>3. Install the app to your workspace</li>
+                    <li>4. Copy the Bot User OAuth Token (starts with xoxb-)</li>
+                    <li>5. Invite the bot to your alert channels</li>
+                  </ol>
+                </div>
+
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Bot Token
+                      Bot Token *
                     </label>
                     <input
                       type="password"
@@ -228,12 +348,13 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       placeholder="xoxb-..."
                     />
+                    <p className="text-xs text-gray-500 mt-1">Required for Slack integration</p>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Alert Channel ID
+                        Alert Channel ID *
                       </label>
                       <input
                         type="text"
@@ -242,11 +363,12 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         placeholder="C091MP3ECQJ"
                       />
+                      <p className="text-xs text-gray-500 mt-1">Channel for immediate alerts</p>
                     </div>
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Report Channel ID
+                        Report Channel ID *
                       </label>
                       <input
                         type="text"
@@ -255,15 +377,9 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         placeholder="C091MP3ECQJ"
                       />
+                      <p className="text-xs text-gray-500 mt-1">Channel for daily reports</p>
                     </div>
                   </div>
-
-                  <button
-                    onClick={testSlackConnection}
-                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-                  >
-                    Test Slack Connection
-                  </button>
                 </div>
               </div>
             )}
@@ -283,11 +399,19 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
                   </label>
                 </div>
 
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                  <h4 className="font-medium text-yellow-900 mb-2">Setup Instructions</h4>
+                  <p className="text-sm text-yellow-800">
+                    For Gmail: Use an App Password instead of your regular password. 
+                    Enable 2FA and generate an App Password in your Google Account settings.
+                  </p>
+                </div>
+
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Sender Email
+                        Sender Email *
                       </label>
                       <input
                         type="email"
@@ -300,7 +424,7 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        App Password
+                        App Password *
                       </label>
                       <input
                         type="password"
@@ -314,7 +438,7 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Recipients (comma-separated)
+                      Recipients (comma-separated) *
                     </label>
                     <textarea
                       value={alertConfig.channels.email.recipients.join(', ')}
@@ -324,13 +448,6 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
                       placeholder="user1@company.com, user2@company.com"
                     />
                   </div>
-
-                  <button
-                    onClick={testEmailConnection}
-                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-                  >
-                    Test Email Connection
-                  </button>
                 </div>
               </div>
             )}
@@ -353,7 +470,7 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
                       max="300"
                     />
                     <p className="text-sm text-gray-500 mt-1">
-                      Queries taking longer than this will be marked as failed
+                      Queries taking longer than this will trigger alerts
                     </p>
                   </div>
 
@@ -392,7 +509,7 @@ export function AlertingConfig({ alertConfig, setAlertConfig, alertState, setAle
                     placeholder="https://tenant-demo.erag-c1.gigaspaces.net"
                   />
                   <p className="text-sm text-gray-500 mt-1">
-                    Environments listed here will be marked as "Disabled" and won't trigger alerts
+                    Environments listed here will be monitored but won't trigger alerts
                   </p>
                 </div>
               </div>

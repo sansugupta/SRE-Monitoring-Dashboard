@@ -10,7 +10,9 @@ import { FileManager } from './components/FileManager';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { useLocalStorage } from './hooks/useLocalStorage';
+import { AlertingService } from './services/alertingService';
 import { EnvironmentResult, ClusterMetrics, ErrorDistribution, AppConfig, AlertConfig, FileConfig } from './types';
+import toast from 'react-hot-toast';
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -85,6 +87,17 @@ function App() {
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [alertState, setAlertState] = useState<Record<string, any>>({});
+  const [alertingService, setAlertingService] = useState<AlertingService | null>(null);
+
+  // Initialize alerting service when config changes
+  useEffect(() => {
+    const service = new AlertingService(
+      alertConfig,
+      config.apiKeys.logging,
+      config.endpoints.groundcoverLogging
+    );
+    setAlertingService(service);
+  }, [alertConfig, config.apiKeys.logging, config.endpoints.groundcoverLogging]);
 
   const generateMockData = (urls: string[]) => {
     const mockEnvironments: EnvironmentResult[] = urls.map((url, index) => {
@@ -135,18 +148,34 @@ function App() {
     return { mockEnvironments, mockClusters, mockErrors };
   };
 
+  const processMonitoringData = async (envData: EnvironmentResult[]) => {
+    if (alertingService) {
+      try {
+        const newAlertState = await alertingService.processEnvironmentResults(envData, alertState);
+        setAlertState(newAlertState);
+      } catch (error) {
+        console.error('Error processing alerts:', error);
+        toast.error('Failed to process alerts');
+      }
+    }
+  };
+
   const handleStartMonitoring = () => {
     setIsMonitoring(true);
     setLastUpdate(new Date());
+    toast.success('Monitoring started - alerts and logging enabled');
     
-    // Simulate real-time monitoring
-    const interval = setInterval(() => {
+    // Simulate real-time monitoring with alerting
+    const interval = setInterval(async () => {
       if (config.environmentUrls.length > 0) {
         const { mockEnvironments, mockClusters, mockErrors } = generateMockData(config.environmentUrls);
         setEnvironments(mockEnvironments);
         setClusterMetrics(mockClusters);
         setErrorDistributions(mockErrors);
         setLastUpdate(new Date());
+        
+        // Process alerts
+        await processMonitoringData(mockEnvironments);
       }
     }, 30000); // Update every 30 seconds
 
@@ -155,6 +184,7 @@ function App() {
 
   const handleStopMonitoring = () => {
     setIsMonitoring(false);
+    toast.success('Monitoring stopped');
   };
 
   const handleManualRun = async () => {
@@ -164,23 +194,50 @@ function App() {
     ];
 
     setLastUpdate(new Date());
+    toast.loading('Running environment checks...');
     
     const { mockEnvironments, mockClusters, mockErrors } = generateMockData(urlsToCheck);
     
     setEnvironments(mockEnvironments);
     setClusterMetrics(mockClusters);
     setErrorDistributions(mockErrors);
+    
+    // Process alerts
+    await processMonitoringData(mockEnvironments);
+    
+    toast.dismiss();
+    toast.success('Manual run completed - results logged to Groundcover');
   };
 
-  const handleRunFrequentMode = () => {
-    // Simulate frequent mode execution (every 5 minutes)
-    handleManualRun();
+  const handleRunFrequentMode = async () => {
+    toast.loading('Running frequent mode...');
+    await handleManualRun();
+    toast.dismiss();
+    toast.success('Frequent mode completed - stateful alerting processed');
   };
 
-  const handleRunDailyMode = () => {
-    // Simulate daily mode execution (PDF generation)
-    handleManualRun();
-    // Additional logic for PDF generation would go here
+  const handleRunDailyMode = async () => {
+    toast.loading('Running daily mode...');
+    await handleManualRun();
+    
+    // Generate and send daily report
+    if (alertingService) {
+      const reportData = {
+        environments,
+        clusterMetrics,
+        errorDistributions
+      };
+      
+      try {
+        await alertingService.sendDailyReport(reportData);
+        toast.dismiss();
+        toast.success('Daily mode completed - PDF report generated and sent');
+      } catch (error) {
+        toast.dismiss();
+        toast.error('Daily report generation failed');
+        console.error('Daily report error:', error);
+      }
+    }
   };
 
   return (
