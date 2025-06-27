@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings as SettingsIcon, Save, Key, Globe, RefreshCw, User } from 'lucide-react';
+import { Settings as SettingsIcon, Save, Key, Globe, RefreshCw, User, Eye, EyeOff } from 'lucide-react';
 import { AppConfig } from '../types';
 import toast from 'react-hot-toast';
 
@@ -12,6 +12,7 @@ export function Settings({ config, setConfig }: SettingsProps) {
   const [formData, setFormData] = useState(config);
   const [activeSection, setActiveSection] = useState('api');
   const [isSaving, setIsSaving] = useState(false);
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
 
   const updateFormData = (section: keyof AppConfig, field: string, value: any) => {
     setFormData(prev => ({
@@ -35,8 +36,8 @@ export function Settings({ config, setConfig }: SettingsProps) {
     if (confirm('Are you sure you want to reset all settings to defaults? This action cannot be undone.')) {
       const defaultConfig: AppConfig = {
         apiKeys: {
-          logging: 'Sv4ZAQmKdVrrd7K1fKj4TMALxhZWrvsA',
-          data: 'p30o3dlvKYNoqqTZHoIpsUZuWwjHg8xP'
+          logging: '',
+          data: ''
         },
         endpoints: {
           groundcoverLogging: 'https://grgrer.platform.grcv.io/json/logs',
@@ -57,6 +58,13 @@ export function Settings({ config, setConfig }: SettingsProps) {
       setFormData(defaultConfig);
       toast.success('Settings reset to defaults');
     }
+  };
+
+  const togglePasswordVisibility = (field: string) => {
+    setShowPasswords(prev => ({
+      ...prev,
+      [field]: !prev[field]
+    }));
   };
 
   const sections = [
@@ -122,31 +130,66 @@ export function Settings({ config, setConfig }: SettingsProps) {
             {activeSection === 'api' && (
               <div className="space-y-6">
                 <h3 className="text-lg font-medium text-gray-900">API Configuration</h3>
+                
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                  <h4 className="font-medium text-yellow-900 mb-2">Required Configuration</h4>
+                  <p className="text-sm text-yellow-800">
+                    Both API keys are required for the dashboard to function properly. The logging API key is used for sending logs to Groundcover, 
+                    and the data API key is used for fetching metrics and error distributions.
+                  </p>
+                </div>
+
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Logging API Key
+                        Logging API Key *
                       </label>
-                      <input
-                        type="text"
-                        value={formData.apiKeys.logging}
-                        onChange={(e) => updateFormData('apiKeys', 'logging', e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        placeholder="Enter logging API key"
-                      />
+                      <div className="relative">
+                        <input
+                          type={showPasswords.logging ? 'text' : 'password'}
+                          value={formData.apiKeys.logging}
+                          onChange={(e) => updateFormData('apiKeys', 'logging', e.target.value)}
+                          className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          placeholder="Enter logging API key"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => togglePasswordVisibility('logging')}
+                          className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                        >
+                          {showPasswords.logging ? (
+                            <EyeOff className="w-4 h-4 text-gray-400" />
+                          ) : (
+                            <Eye className="w-4 h-4 text-gray-400" />
+                          )}
+                        </button>
+                      </div>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Data API Key
+                        Data API Key *
                       </label>
-                      <input
-                        type="text"
-                        value={formData.apiKeys.data}
-                        onChange={(e) => updateFormData('apiKeys', 'data', e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        placeholder="Enter data API key"
-                      />
+                      <div className="relative">
+                        <input
+                          type={showPasswords.data ? 'text' : 'password'}
+                          value={formData.apiKeys.data}
+                          onChange={(e) => updateFormData('apiKeys', 'data', e.target.value)}
+                          className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          placeholder="Enter data API key"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => togglePasswordVisibility('data')}
+                          className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                        >
+                          {showPasswords.data ? (
+                            <EyeOff className="w-4 h-4 text-gray-400" />
+                          ) : (
+                            <Eye className="w-4 h-4 text-gray-400" />
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
                   
@@ -198,10 +241,19 @@ export function Settings({ config, setConfig }: SettingsProps) {
             {activeSection === 'credentials' && (
               <div className="space-y-6">
                 <h3 className="text-lg font-medium text-gray-900">Authentication Credentials</h3>
+                
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h4 className="font-medium text-blue-900 mb-2">Environment Login Credentials</h4>
+                  <p className="text-sm text-blue-800">
+                    These credentials are used to authenticate with the production environments during testing. 
+                    They should have access to all environments you want to monitor.
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Email
+                      Email *
                     </label>
                     <input
                       type="email"
@@ -213,15 +265,28 @@ export function Settings({ config, setConfig }: SettingsProps) {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Password
+                      Password *
                     </label>
-                    <input
-                      type="password"
-                      value={formData.credentials.password}
-                      onChange={(e) => updateFormData('credentials', 'password', e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      placeholder="••••••••••••••••"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showPasswords.password ? 'text' : 'password'}
+                        value={formData.credentials.password}
+                        onChange={(e) => updateFormData('credentials', 'password', e.target.value)}
+                        className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="••••••••••••••••"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => togglePasswordVisibility('password')}
+                        className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                      >
+                        {showPasswords.password ? (
+                          <EyeOff className="w-4 h-4 text-gray-400" />
+                        ) : (
+                          <Eye className="w-4 h-4 text-gray-400" />
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -230,6 +295,14 @@ export function Settings({ config, setConfig }: SettingsProps) {
             {activeSection === 'environments' && (
               <div className="space-y-6">
                 <h3 className="text-lg font-medium text-gray-900">Environment Configuration</h3>
+                
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                  <h4 className="font-medium text-green-900 mb-2">Environment URLs</h4>
+                  <p className="text-sm text-green-800">
+                    Configure the environment URLs that will be monitored. You can also manage these in the Environment Testing section.
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -260,6 +333,14 @@ export function Settings({ config, setConfig }: SettingsProps) {
             {activeSection === 'applications' && (
               <div className="space-y-6">
                 <h3 className="text-lg font-medium text-gray-900">Application ID Configuration</h3>
+                
+                <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                  <h4 className="font-medium text-purple-900 mb-2">Application IDs</h4>
+                  <p className="text-sm text-purple-800">
+                    Configure application IDs used for authentication with different environments. 
+                    Each environment may require a specific application ID for proper access.
+                  </p>
+                </div>
                 
                 <div className="space-y-4">
                   <div>

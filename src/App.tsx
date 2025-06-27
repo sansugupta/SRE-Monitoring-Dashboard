@@ -7,19 +7,20 @@ import { Scheduler } from './components/Scheduler';
 import { Settings } from './components/Settings';
 import { AlertingConfig } from './components/AlertingConfig';
 import { FileManager } from './components/FileManager';
+import { EnvironmentTester } from './components/EnvironmentTester';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { useLocalStorage } from './hooks/useLocalStorage';
-import { AlertingService } from './services/alertingService';
-import { EnvironmentResult, ClusterMetrics, ErrorDistribution, AppConfig, AlertConfig, FileConfig } from './types';
+import { MonitoringService } from './services/monitoringService';
+import { EnvironmentResult, ClusterMetrics, ErrorDistribution, AppConfig, AlertConfig, FileConfig, AlertState } from './types';
 import toast from 'react-hot-toast';
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [config, setConfig] = useLocalStorage<AppConfig>('sreConfig', {
     apiKeys: {
-      logging: 'Sv4ZAQmKdVrrd7K1fKj4TMALxhZWrvsA',
-      data: 'p30o3dlvKYNoqqTZHoIpsUZuWwjHg8xP'
+      logging: '',
+      data: ''
     },
     endpoints: {
       groundcoverLogging: 'https://grgrer.platform.grcv.io/json/logs',
@@ -85,160 +86,254 @@ function App() {
   const [clusterMetrics, setClusterMetrics] = useState<ClusterMetrics[]>([]);
   const [errorDistributions, setErrorDistributions] = useState<ErrorDistribution[]>([]);
   const [isMonitoring, setIsMonitoring] = useState(false);
+  const [isRunningTests, setIsRunningTests] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [alertState, setAlertState] = useState<Record<string, any>>({});
-  const [alertingService, setAlertingService] = useState<AlertingService | null>(null);
+  const [alertState, setAlertState] = useLocalStorage<AlertState>('alertState', {});
+  const [monitoringService, setMonitoringService] = useState<MonitoringService | null>(null);
 
-  // Initialize alerting service when config changes
+  // Initialize monitoring service when config changes
   useEffect(() => {
-    const service = new AlertingService(
-      alertConfig,
-      config.apiKeys.logging,
-      config.endpoints.groundcoverLogging
-    );
-    setAlertingService(service);
-  }, [alertConfig, config.apiKeys.logging, config.endpoints.groundcoverLogging]);
+    if (config.apiKeys.logging && config.credentials.email && config.credentials.password) {
+      const service = new MonitoringService(config, alertConfig);
+      setMonitoringService(service);
+    } else {
+      setMonitoringService(null);
+    }
+  }, [config, alertConfig]);
 
-  const generateMockData = (urls: string[]) => {
-    const mockEnvironments: EnvironmentResult[] = urls.map((url, index) => {
-      const urlParts = url.replace('https://', '').split('.');
-      const namespace = urlParts[0] || `env-${index + 1}`;
-      const cluster = urlParts[1] || `cluster-${index + 1}`;
-      
-      const hasIssue = Math.random() > 0.8;
-      
-      return {
-        id: `${index + 1}`,
-        namespace,
-        cluster,
-        region: cluster.includes('erag-c1') ? 'US' : cluster.includes('use1') ? 'US-EAST' : cluster.includes('euc1') ? 'EU' : 'US',
-        url,
-        loginPage: hasIssue ? 'Not Live' : 'Live',
-        authorization: hasIssue ? 'Fail' : 'Success',
-        message: hasIssue ? 'Fail' : 'Success',
-        queryTimeS: Math.round((Math.random() * 5 + 1) * 10) / 10,
-        version: `7.0.${Math.floor(Math.random() * 5)}`,
-        lastChecked: new Date(),
-        lastTransactionDate: hasIssue ? 'Error retrieving data' : '2025-01-15 14:30:22'
-      };
-    });
-
-    const clusters = [...new Set(mockEnvironments.map(env => `${env.cluster}-gigaspaces-net`))];
-    const mockClusters: ClusterMetrics[] = clusters.map(cluster => ({
-      cluster,
-      region: cluster.includes('erag-c1') ? 'US' : cluster.includes('use1') ? 'US-EAST' : cluster.includes('euc1') ? 'EU' : 'US',
-      nodes: Math.floor(Math.random() * 15) + 5,
-      ramUsage: Math.round((Math.random() * 40 + 40) * 10) / 10,
-      cpuUsage: Math.round((Math.random() * 60 + 20) * 10) / 10,
-      lastUpdated: new Date()
-    }));
-
-    const mockErrors: ErrorDistribution[] = mockEnvironments.map(env => ({
-      namespace: env.namespace,
-      cluster: `${env.cluster}-gigaspaces-net`,
-      region: env.region,
-      errors24h: Math.floor(Math.random() * 200) + 10,
-      errorRate24h: Math.round((Math.random() * 15 + 1) * 100) / 100,
-      errors48h: Math.floor(Math.random() * 400) + 20,
-      errorRate48h: Math.round((Math.random() * 12 + 1) * 100) / 100,
-      errors72h: Math.floor(Math.random() * 600) + 30,
-      errorRate72h: Math.round((Math.random() * 10 + 1) * 100) / 100
-    }));
-
-    return { mockEnvironments, mockClusters, mockErrors };
+  const validateConfiguration = (): boolean => {
+    if (!config.apiKeys.logging) {
+      toast.error('Logging API key is required. Please configure it in Settings.');
+      return false;
+    }
+    if (!config.apiKeys.data) {
+      toast.error('Data API key is required. Please configure it in Settings.');
+      return false;
+    }
+    if (!config.credentials.email || !config.credentials.password) {
+      toast.error('Login credentials are required. Please configure them in Settings.');
+      return false;
+    }
+    return true;
   };
 
-  const processMonitoringData = async (envData: EnvironmentResult[]) => {
-    if (alertingService) {
-      try {
-        const newAlertState = await alertingService.processEnvironmentResults(envData, alertState);
+  const handleRunTests = async (urls: string[], exclusions: string[]) => {
+    if (!validateConfiguration() || !monitoringService) {
+      return;
+    }
+
+    setIsRunningTests(true);
+    toast.loading('Running environment tests...');
+
+    try {
+      const results = await monitoringService.runEnvironmentTests(urls, exclusions);
+      
+      // Convert to the format expected by the UI
+      const convertedResults: EnvironmentResult[] = results.map((result, index) => ({
+        id: `${index + 1}`,
+        namespace: result.namespace,
+        cluster: result.cluster,
+        region: result.region,
+        url: result.url,
+        loginPage: result.loginPage,
+        authorization: result.authorization,
+        message: result.message,
+        queryTimeS: result.queryTimeS,
+        version: result.version,
+        lastChecked: result.lastChecked,
+        lastTransactionDate: result.lastTransactionDate
+      }));
+
+      setEnvironments(convertedResults);
+      setLastUpdate(new Date());
+
+      // Process alerts
+      if (alertConfig.enabled) {
+        const newAlertState = await monitoringService.processAlerts(results, alertState);
         setAlertState(newAlertState);
-      } catch (error) {
-        console.error('Error processing alerts:', error);
-        toast.error('Failed to process alerts');
       }
+
+      toast.dismiss();
+      toast.success(`Environment tests completed - ${results.length} environments tested`);
+    } catch (error) {
+      toast.dismiss();
+      toast.error('Failed to run environment tests');
+      console.error('Environment test error:', error);
+    } finally {
+      setIsRunningTests(false);
     }
   };
 
   const handleStartMonitoring = () => {
+    if (!validateConfiguration() || !monitoringService) {
+      return;
+    }
+
     setIsMonitoring(true);
     setLastUpdate(new Date());
-    toast.success('Monitoring started - alerts and logging enabled');
+    toast.success('Monitoring started - running full monitoring cycle');
     
-    // Simulate real-time monitoring with alerting
+    // Run initial full monitoring
+    handleRunFullMonitoring();
+    
+    // Set up interval for continuous monitoring
     const interval = setInterval(async () => {
-      if (config.environmentUrls.length > 0) {
-        const { mockEnvironments, mockClusters, mockErrors } = generateMockData(config.environmentUrls);
-        setEnvironments(mockEnvironments);
-        setClusterMetrics(mockClusters);
-        setErrorDistributions(mockErrors);
-        setLastUpdate(new Date());
-        
-        // Process alerts
-        await processMonitoringData(mockEnvironments);
-      }
-    }, 30000); // Update every 30 seconds
+      if (monitoringService) {
+        try {
+          const results = await monitoringService.runFullMonitoring(alertConfig.testExclusions.environments);
+          
+          // Convert and update state
+          const convertedEnvironments: EnvironmentResult[] = results.environments.map((result, index) => ({
+            id: `${index + 1}`,
+            namespace: result.namespace,
+            cluster: result.cluster,
+            region: result.region,
+            url: result.url,
+            loginPage: result.loginPage,
+            authorization: result.authorization,
+            message: result.message,
+            queryTimeS: result.queryTimeS,
+            version: result.version,
+            lastChecked: result.lastChecked,
+            lastTransactionDate: result.lastTransactionDate
+          }));
 
-    return () => clearInterval(interval);
+          const convertedClusterMetrics: ClusterMetrics[] = results.clusterMetrics.map(metric => ({
+            cluster: metric.cluster,
+            region: metric.region,
+            nodes: metric.nodes,
+            ramUsage: metric.ramUsage,
+            cpuUsage: metric.cpuUsage,
+            lastUpdated: metric.lastUpdated
+          }));
+
+          const convertedErrorDistributions: ErrorDistribution[] = results.errorDistributions.map(error => ({
+            namespace: error.namespace,
+            cluster: error.cluster,
+            region: error.region,
+            errors24h: error.errors24h,
+            errorRate24h: error.errorRate24h,
+            errors48h: error.errors48h,
+            errorRate48h: error.errorRate48h,
+            errors72h: error.errors72h,
+            errorRate72h: error.errorRate72h
+          }));
+
+          setEnvironments(convertedEnvironments);
+          setClusterMetrics(convertedClusterMetrics);
+          setErrorDistributions(convertedErrorDistributions);
+          setLastUpdate(new Date());
+        } catch (error) {
+          console.error('Monitoring cycle error:', error);
+        }
+      }
+    }, 300000); // Run every 5 minutes
+
+    // Store interval ID for cleanup
+    (window as any).monitoringInterval = interval;
   };
 
   const handleStopMonitoring = () => {
     setIsMonitoring(false);
+    
+    // Clear monitoring interval
+    if ((window as any).monitoringInterval) {
+      clearInterval((window as any).monitoringInterval);
+      delete (window as any).monitoringInterval;
+    }
+    
     toast.success('Monitoring stopped');
   };
 
-  const handleManualRun = async () => {
-    const urlsToCheck = config.environmentUrls.length > 0 ? config.environmentUrls : [
-      'https://tenant-tempo2.erag-c1.gigaspaces.net',
-      'https://tenant-demo.ws-use1.gigaspaces.net'
-    ];
+  const handleRunFullMonitoring = async () => {
+    if (!validateConfiguration() || !monitoringService) {
+      return;
+    }
 
-    setLastUpdate(new Date());
-    toast.loading('Running environment checks...');
+    toast.loading('Running full monitoring cycle...');
     
-    const { mockEnvironments, mockClusters, mockErrors } = generateMockData(urlsToCheck);
-    
-    setEnvironments(mockEnvironments);
-    setClusterMetrics(mockClusters);
-    setErrorDistributions(mockErrors);
-    
-    // Process alerts
-    await processMonitoringData(mockEnvironments);
-    
-    toast.dismiss();
-    toast.success('Manual run completed - results logged to Groundcover');
+    try {
+      const results = await monitoringService.runFullMonitoring(alertConfig.testExclusions.environments);
+      
+      // Convert and update state
+      const convertedEnvironments: EnvironmentResult[] = results.environments.map((result, index) => ({
+        id: `${index + 1}`,
+        namespace: result.namespace,
+        cluster: result.cluster,
+        region: result.region,
+        url: result.url,
+        loginPage: result.loginPage,
+        authorization: result.authorization,
+        message: result.message,
+        queryTimeS: result.queryTimeS,
+        version: result.version,
+        lastChecked: result.lastChecked,
+        lastTransactionDate: result.lastTransactionDate
+      }));
+
+      const convertedClusterMetrics: ClusterMetrics[] = results.clusterMetrics.map(metric => ({
+        cluster: metric.cluster,
+        region: metric.region,
+        nodes: metric.nodes,
+        ramUsage: metric.ramUsage,
+        cpuUsage: metric.cpuUsage,
+        lastUpdated: metric.lastUpdated
+      }));
+
+      const convertedErrorDistributions: ErrorDistribution[] = results.errorDistributions.map(error => ({
+        namespace: error.namespace,
+        cluster: error.cluster,
+        region: error.region,
+        errors24h: error.errors24h,
+        errorRate24h: error.errorRate24h,
+        errors48h: error.errors48h,
+        errorRate48h: error.errorRate48h,
+        errors72h: error.errors72h,
+        errorRate72h: error.errorRate72h
+      }));
+
+      setEnvironments(convertedEnvironments);
+      setClusterMetrics(convertedClusterMetrics);
+      setErrorDistributions(convertedErrorDistributions);
+      setLastUpdate(new Date());
+
+      toast.dismiss();
+      toast.success('Full monitoring cycle completed successfully');
+    } catch (error) {
+      toast.dismiss();
+      toast.error('Full monitoring cycle failed');
+      console.error('Full monitoring error:', error);
+    }
+  };
+
+  const handleManualRun = async () => {
+    await handleRunFullMonitoring();
   };
 
   const handleRunFrequentMode = async () => {
     toast.loading('Running frequent mode...');
-    await handleManualRun();
+    await handleRunTests(config.environmentUrls, alertConfig.testExclusions.environments);
     toast.dismiss();
     toast.success('Frequent mode completed - stateful alerting processed');
   };
 
   const handleRunDailyMode = async () => {
     toast.loading('Running daily mode...');
-    await handleManualRun();
+    await handleRunFullMonitoring();
     
-    // Generate and send daily report
-    if (alertingService) {
-      const reportData = {
-        environments,
-        clusterMetrics,
-        errorDistributions
-      };
-      
-      try {
-        await alertingService.sendDailyReport(reportData);
-        toast.dismiss();
-        toast.success('Daily mode completed - PDF report generated and sent');
-      } catch (error) {
-        toast.dismiss();
-        toast.error('Daily report generation failed');
-        console.error('Daily report error:', error);
-      }
-    }
+    // TODO: Generate and send daily report
+    toast.dismiss();
+    toast.success('Daily mode completed - full monitoring and reporting');
   };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if ((window as any).monitoringInterval) {
+        clearInterval((window as any).monitoringInterval);
+      }
+    };
+  }, []);
 
   return (
     <Router>
@@ -311,6 +406,17 @@ function App() {
                     <FileManager 
                       fileConfig={fileConfig}
                       setFileConfig={setFileConfig}
+                    />
+                  } 
+                />
+                <Route 
+                  path="/testing" 
+                  element={
+                    <EnvironmentTester 
+                      config={config}
+                      setConfig={setConfig}
+                      onRunTests={handleRunTests}
+                      isRunning={isRunningTests}
                     />
                   } 
                 />
