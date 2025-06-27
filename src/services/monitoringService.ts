@@ -3,6 +3,7 @@ import { MetricsService, ClusterMetric, ErrorDistributionData } from './metricsS
 import { GroundcoverService } from './groundcoverService';
 import { AlertingService } from './alertingService';
 import { AppConfig, AlertConfig, AlertState } from '../types';
+import { logService } from './logService';
 
 export interface MonitoringResults {
   environments: EnvironmentTestResult[];
@@ -51,22 +52,20 @@ export class MonitoringService {
     const urlsToTest = urls.length > 0 ? urls : this.config.environmentUrls;
     
     if (urlsToTest.length === 0) {
-      console.warn('No environment URLs configured for testing');
+      logService.warn('No environment URLs configured for testing');
       return [];
     }
 
-    console.log(`Testing ${urlsToTest.length} environments...`);
+    logService.log(`Starting tests for ${urlsToTest.length} environments...`);
     
     const results: EnvironmentTestResult[] = [];
-    
-    // Test environments in parallel with concurrency limit
-    const concurrency = 3;
+    const concurrency = 5;
     for (let i = 0; i < urlsToTest.length; i += concurrency) {
       const batch = urlsToTest.slice(i, i + concurrency);
       const batchPromises = batch.map(url => 
         this.environmentService.testEnvironment(url, exclusions)
           .catch(error => {
-            console.error(`Failed to test environment ${url}:`, error);
+            logService.error(`Failed to test environment ${url}`, error);
             return this.createFailedResult(url, error);
           })
       );
@@ -75,21 +74,17 @@ export class MonitoringService {
       results.push(...batchResults);
     }
 
-    // Log summary to Groundcover
     await this.logTestSummary(results);
-
+    logService.log(`Environment tests completed. See summary log for details.`);
     return results;
   }
 
   async runFullMonitoring(exclusions: string[] = []): Promise<MonitoringResults> {
-    console.log('Starting full monitoring run...');
-
-    // Run environment tests
+    logService.log('Starting full monitoring run...');
     const environments = await this.runEnvironmentTests([], exclusions);
 
-    // Detect clusters and fetch metrics
     const clusters = await this.metricsService.detectClusters();
-    console.log(`Detected clusters: ${clusters.join(', ')}`);
+    logService.log(`Detected clusters: ${clusters.join(', ')}`);
 
     const [clusterMetrics, errorDistributions] = await Promise.all([
       this.metricsService.fetchClusterMetrics(clusters),
@@ -99,23 +94,16 @@ export class MonitoringService {
       )
     ]);
 
-    // Process alerts if alerting is enabled
     if (this.alertingService) {
       try {
         await this.alertingService.processEnvironmentResults(environments, {});
       } catch (error) {
-        console.error('Error processing alerts:', error);
+        logService.error('Error processing alerts during full monitoring', error);
       }
     }
 
-    const results = {
-      environments,
-      clusterMetrics,
-      errorDistributions
-    };
-
-    console.log(`Monitoring completed: ${environments.length} environments, ${clusterMetrics.length} clusters, ${errorDistributions.length} error records`);
-
+    const results = { environments, clusterMetrics, errorDistributions };
+    logService.log(`Full monitoring completed: ${environments.length} envs, ${clusterMetrics.length} clusters, ${errorDistributions.length} error records.`);
     return results;
   }
 
@@ -124,14 +112,14 @@ export class MonitoringService {
     currentAlertState: AlertState
   ): Promise<AlertState> {
     if (!this.alertingService) {
-      console.warn('Alerting service not configured');
+      logService.warn('Alerting service not configured, skipping alert processing.');
       return currentAlertState;
     }
 
     try {
       return await this.alertingService.processEnvironmentResults(environments, currentAlertState);
     } catch (error) {
-      console.error('Error processing alerts:', error);
+      logService.error('Error processing alerts:', error);
       return currentAlertState;
     }
   }
@@ -141,15 +129,9 @@ export class MonitoringService {
     const cluster = url.split('.')[1] || 'unknown';
     
     return {
-      namespace,
-      cluster,
-      region: 'N/A',
-      url,
-      loginPage: 'Not Live',
-      authorization: 'Fail',
-      message: 'Fail',
-      queryTimeS: 0,
-      version: 'Unknown',
+      namespace, cluster, region: 'N/A', url,
+      loginPage: 'Not Live', authorization: 'Fail', message: 'Fail',
+      queryTimeS: 0, version: 'Unknown',
       lastTransactionDate: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
       lastChecked: new Date()
     };
@@ -164,6 +146,13 @@ export class MonitoringService {
       disabled: results.filter(r => r.loginPage === 'Disabled').length
     };
 
-    await this.groundcoverService.logSystemEvent('environment_test_summary', summary);
+    if (this.groundcoverService) {
+      await this.groundcoverService.sendLog({
+        timestamp: new Date().toISOString(),
+        content: 'Environment test summary',
+        string_attributes: { gc_source_type: 'test_summary' },
+        float_attributes: summary,
+      });
+    }
   }
 }

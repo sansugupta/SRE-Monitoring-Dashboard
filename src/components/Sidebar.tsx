@@ -8,7 +8,8 @@ import {
   Shield,
   Bell,
   FolderOpen,
-  TestTube
+  TestTube,
+  FileSearch,
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -24,6 +25,7 @@ export function Sidebar({ activeTab, setActiveTab }: SidebarProps) {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3, path: '/dashboard' },
     { id: 'testing', label: 'Environment Testing', icon: TestTube, path: '/testing' },
+    { id: 'logs', label: 'Live Logs', icon: FileSearch, path: '/logs' },
     { id: 'reports', label: 'Reports', icon: FileText, path: '/reports' },
     { id: 'scheduler', label: 'Scheduler', icon: Calendar, path: '/scheduler' },
     { id: 'alerting', label: 'Alerting', icon: Bell, path: '/alerting' },

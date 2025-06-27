@@ -22,20 +22,14 @@ export class SlackService {
     try {
       const response = await fetch(`${this.baseUrl}/chat.postMessage`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.botToken}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Authorization': `Bearer ${this.botToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(message),
       });
-
       const result = await response.json();
-      
       if (!result.ok) {
         console.error('Slack API error:', result.error);
         return false;
       }
-
       return true;
     } catch (error) {
       console.error('Failed to send Slack message:', error);
@@ -43,61 +37,35 @@ export class SlackService {
     }
   }
 
-  async sendAlert(channelId: string, environment: string, cluster: string, reason: string): Promise<boolean> {
+  async sendAlert(channelId: string, environment: string, cluster: string, reason: string, type: 'new' | 'reminder' | 'resolved'): Promise<boolean> {
+    const isResolved = type === 'resolved';
+    const headerText = isResolved ? '✅ Environment Recovered' : '🚨 Production Environment Alert';
+    const statusText = isResolved ? '✅ RECOVERED' : '❌ FAILED';
+
     const message: SlackMessage = {
       channel: channelId,
-      text: `🚨 Production Alert: ${environment}`,
+      text: `${headerText}: ${environment}`,
       blocks: [
-        {
-          type: 'header',
-          text: {
-            type: 'plain_text',
-            text: '🚨 Production Environment Alert'
-          }
-        },
+        { type: 'header', text: { type: 'plain_text', text: headerText } },
         {
           type: 'section',
           fields: [
-            {
-              type: 'mrkdwn',
-              text: `*Environment:*\n${environment}`
-            },
-            {
-              type: 'mrkdwn',
-              text: `*Cluster:*\n${cluster}`
-            },
-            {
-              type: 'mrkdwn',
-              text: `*Status:*\n❌ FAILED`
-            },
-            {
-              type: 'mrkdwn',
-              text: `*Time:*\n${new Date().toLocaleString()}`
-            }
+            { type: 'mrkdwn', text: `*Environment:*\n${environment}` },
+            { type: 'mrkdwn', text: `*Cluster:*\n${cluster}` },
+            { type: 'mrkdwn', text: `*Status:*\n${statusText}` },
+            { type: 'mrkdwn', text: `*Time:*\n${new Date().toLocaleString()}` }
           ]
         },
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*Reason:* ${reason}`
-          }
-        },
-        {
-          type: 'divider'
-        },
+        !isResolved ? { type: 'section', text: { type: 'mrkdwn', text: `*Reason:* ${reason}` } } : { type: 'divider' },
         {
           type: 'context',
-          elements: [
-            {
-              type: 'mrkdwn',
-              text: '🔍 Please investigate immediately'
-            }
-          ]
+          elements: [{
+            type: 'mrkdwn',
+            text: isResolved ? 'This environment is now operating normally.' : '🔍 Please investigate immediately.'
+          }]
         }
-      ]
+      ].filter(Boolean)
     };
-
     return this.sendMessage(message);
   }
 
@@ -112,37 +80,18 @@ export class SlackService {
       channel: channelId,
       text: `📊 Daily Production Report - ${new Date().toLocaleDateString()}`,
       blocks: [
-        {
-          type: 'header',
-          text: {
-            type: 'plain_text',
-            text: `📊 Daily Production Report - ${new Date().toLocaleDateString()}`
-          }
-        },
+        { type: 'header', text: { type: 'plain_text', text: `📊 Daily Production Report - ${new Date().toLocaleDateString()}` } },
         {
           type: 'section',
           fields: [
-            {
-              type: 'mrkdwn',
-              text: `*Environment Health:*\n${successfulEnvs}/${totalEnvs} Live`
-            },
-            {
-              type: 'mrkdwn',
-              text: `*Total Nodes:*\n${totalNodes}`
-            },
-            {
-              type: 'mrkdwn',
-              text: `*Highest Error Rate:*\n${highestErrorRate.toFixed(1)}%`
-            },
-            {
-              type: 'mrkdwn',
-              text: `*Report Time:*\n${new Date().toLocaleString()}`
-            }
+            { type: 'mrkdwn', text: `*Environment Health:*\n${successfulEnvs}/${totalEnvs} Live` },
+            { type: 'mrkdwn', text: `*Total Nodes:*\n${totalNodes}` },
+            { type: 'mrkdwn', text: `*Highest Error Rate:*\n${highestErrorRate.toFixed(1)}%` },
+            { type: 'mrkdwn', text: `*Report Time:*\n${new Date().toLocaleString()}` }
           ]
         }
       ]
     };
-
     return this.sendMessage(message);
   }
 
@@ -150,12 +99,8 @@ export class SlackService {
     try {
       const response = await fetch(`${this.baseUrl}/auth.test`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.botToken}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Authorization': `Bearer ${this.botToken}` },
       });
-
       const result = await response.json();
       return result.ok;
     } catch (error) {

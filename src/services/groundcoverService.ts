@@ -1,10 +1,10 @@
-export interface LogEntry {
+import { logService } from './logService';
+
+export interface GroundcoverPayload {
   timestamp: string;
-  level: 'info' | 'warn' | 'error' | 'debug';
-  message: string;
-  environment?: string;
-  cluster?: string;
-  metadata?: Record<string, any>;
+  content: string;
+  string_attributes: Record<string, any>;
+  float_attributes?: Record<string, any>;
 }
 
 export class GroundcoverService {
@@ -16,9 +16,9 @@ export class GroundcoverService {
     this.endpoint = endpoint;
   }
 
-  async sendLog(logEntry: LogEntry): Promise<boolean> {
+  async sendLog(payload: GroundcoverPayload): Promise<boolean> {
     if (!this.apiKey || !this.endpoint) {
-      console.error('Groundcover credentials not configured');
+      logService.error('Groundcover credentials not configured');
       return false;
     }
 
@@ -29,89 +29,31 @@ export class GroundcoverService {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          ...logEntry,
-          source: 'sre-monitoring-dashboard',
-          timestamp: logEntry.timestamp || new Date().toISOString(),
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
-        console.error('Groundcover API error:', response.statusText);
+        const errorText = await response.text();
+        logService.error(`Groundcover API error: ${response.status} - ${response.statusText}`, errorText);
         return false;
       }
-
+      
+      logService.log(`Log successfully sent to Groundcover: ${payload.content}`);
       return true;
     } catch (error) {
-      console.error('Failed to send log to Groundcover:', error);
+      logService.error('Failed to send log to Groundcover', error);
       return false;
     }
   }
 
-  async logEnvironmentCheck(environment: string, cluster: string, status: 'success' | 'failure', details: any): Promise<boolean> {
-    const logEntry: LogEntry = {
-      timestamp: new Date().toISOString(),
-      level: status === 'success' ? 'info' : 'error',
-      message: `Environment check ${status}: ${environment}`,
-      environment,
-      cluster,
-      metadata: {
-        type: 'environment_check',
-        status,
-        queryTime: details.queryTimeS,
-        loginPage: details.loginPage,
-        authorization: details.authorization,
-        message: details.message,
-        version: details.version,
-        lastTransactionDate: details.lastTransactionDate,
-      }
-    };
-
-    return this.sendLog(logEntry);
-  }
-
-  async logAlert(environment: string, cluster: string, reason: string, alertType: 'new' | 'reminder' | 'resolved'): Promise<boolean> {
-    const logEntry: LogEntry = {
-      timestamp: new Date().toISOString(),
-      level: alertType === 'resolved' ? 'info' : 'warn',
-      message: `Alert ${alertType}: ${environment} - ${reason}`,
-      environment,
-      cluster,
-      metadata: {
-        type: 'alert',
-        alertType,
-        reason,
-      }
-    };
-
-    return this.sendLog(logEntry);
-  }
-
-  async logSystemEvent(event: string, details: Record<string, any>): Promise<boolean> {
-    const logEntry: LogEntry = {
-      timestamp: new Date().toISOString(),
-      level: 'info',
-      message: `System event: ${event}`,
-      metadata: {
-        type: 'system_event',
-        event,
-        ...details,
-      }
-    };
-
-    return this.sendLog(logEntry);
-  }
-
   async testConnection(): Promise<boolean> {
-    const testLog: LogEntry = {
+    const testPayload: GroundcoverPayload = {
       timestamp: new Date().toISOString(),
-      level: 'info',
-      message: 'Groundcover connection test',
-      metadata: {
-        type: 'connection_test',
+      content: 'Groundcover connection test from SRE Dashboard',
+      string_attributes: {
+        gc_source_type: 'connection_test'
       }
     };
-
-    return this.sendLog(testLog);
+    return this.sendLog(testPayload);
   }
 }

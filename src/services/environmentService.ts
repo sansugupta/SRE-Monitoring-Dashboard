@@ -1,3 +1,6 @@
+import { logService } from './logService';
+import { GroundcoverService } from './groundcoverService';
+
 export interface EnvironmentTestResult {
   namespace: string;
   cluster: string;
@@ -39,7 +42,7 @@ export class EnvironmentService {
   constructor(
     private credentials: LoginCredentials,
     private config: EnvironmentConfig,
-    private groundcoverService?: any
+    private groundcoverService?: GroundcoverService
   ) {}
 
   async testEnvironment(url: string, exclusions: string[] = []): Promise<EnvironmentTestResult> {
@@ -61,336 +64,171 @@ export class EnvironmentService {
       lastChecked: new Date()
     };
 
-    // Check if environment is excluded
     if (exclusions.includes(url)) {
       result.loginPage = 'Disabled';
       result.authorization = 'Disabled';
       result.message = 'Disabled';
       result.lastTransactionDate = 'Environment excluded from testing';
+      logService.warn(`Skipping tests for excluded environment: ${url}`);
       return result;
     }
 
     try {
-      // Get application ID for this environment
+      logService.log(`Starting test for environment: ${url}`);
       const applicationId = this.getApplicationId(url);
       if (!applicationId) {
         throw new Error('No application ID configured for this environment');
       }
 
-      // Step 1: Login and get cookies
-      const { cookies, error } = await this.loginToEnvironment(url, applicationId);
-      if (!cookies) {
+      const { success, error } = await this.loginToEnvironment(url, applicationId);
+      if (!success) {
         throw new Error(error || 'Login failed');
       }
+      logService.log(`Login successful for ${url}`);
 
-      // Step 2: Check login page availability
-      const { status: loginStatus, duration: loginDuration } = await this.checkLoginPageAvailability(url, cookies, namespace, cluster);
+      const { status: loginStatus, duration: loginDuration } = await this.checkLoginPageAvailability(url, namespace, cluster);
       result.loginPage = loginStatus;
+      await this.logToGroundcover('login_page', url, loginStatus, namespace, cluster, loginDuration);
+      if (loginStatus !== 'Live') return result;
+      logService.log(`Login page check for ${url}: ${loginStatus}`);
 
-      if (loginStatus !== 'Live') {
-        await this.logToGroundcover('login_page', url, loginStatus, namespace, cluster, loginDuration);
-        return result;
-      }
-
-      // Step 3: Get authorization token
-      const { token, status: authStatus, duration: authDuration } = await this.getAuthToken(url, cookies, namespace, cluster);
+      const { token, status: authStatus, duration: authDuration } = await this.getAuthToken(url, namespace, cluster);
       result.authorization = authStatus;
+      await this.logToGroundcover('authorization', url, authStatus, namespace, cluster, authDuration);
+      if (authStatus !== 'Success' || !token) return result;
+      logService.log(`Auth token retrieved for ${url}`);
+      
+      result.version = await this.getEnvironmentVersion(url);
+      logService.log(`Version for ${url}: ${result.version}`);
 
-      if (authStatus !== 'Success' || !token) {
-        await this.logToGroundcover('authorization', url, authStatus, namespace, cluster, authDuration);
-        return result;
-      }
-
-      // Step 4: Get version
-      result.version = await this.getEnvironmentVersion(url, cookies);
-
-      // Step 5: Query the environment
-      const { status: queryStatus, queryTime, nlResult } = await this.queryEnvironment(url, token, cookies, namespace, cluster);
+      const { status: queryStatus, queryTime, nlResult } = await this.queryEnvironment(url, token, namespace, cluster);
       result.message = queryStatus;
       result.queryTimeS = queryTime;
       result.lastTransactionDate = nlResult;
-
       await this.logToGroundcover('message', url, queryStatus, namespace, cluster, queryTime * 1000);
+      logService.log(`Query for ${url} completed with status: ${queryStatus}`);
 
     } catch (error) {
-      console.error(`Error testing environment ${url}:`, error);
+      logService.error(`Error testing environment ${url}:`, error);
       result.lastTransactionDate = `Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      
-      // Log the error to Groundcover
       await this.logToGroundcover('error', url, 'Fail', namespace, cluster, 0, error instanceof Error ? error.message : 'Unknown error');
     }
 
     return result;
   }
 
-  private extractNamespace(url: string): string {
-    try {
-      return url.split('.')[0].replace('https://', '');
-    } catch {
-      return 'unknown_env';
-    }
-  }
+  private extractNamespace = (url: string) => url.split('.')[0]?.replace('https://', '') || 'unknown_env';
+  private extractCluster = (url: string) => url.split('.')[1] || 'unknown_cluster';
+  private getRegion = (cluster: string) => cluster.includes('erag-c1') ? 'US' : cluster.includes('euc1') ? 'EU' : cluster.includes('use1') ? 'US-EAST' : cluster.includes('erag-dev') ? 'DEV' : cluster.includes('mercury') ? 'MERCURY' : 'N/A';
+  private getApplicationId = (url: string) => this.config.applicationIds.environmentSpecific[url] || this.config.applicationIds.default || null;
 
-  private extractCluster(url: string): string {
-    try {
-      return url.split('.')[1];
-    } catch {
-      return 'unknown_cluster';
-    }
-  }
-
-  private getRegion(cluster: string): string {
-    if (cluster.includes('erag-c1')) return 'US';
-    if (cluster.includes('euc1')) return 'EU';
-    if (cluster.includes('use1')) return 'US-EAST';
-    if (cluster.includes('erag-dev')) return 'DEV';
-    if (cluster.includes('mercury')) return 'MERCURY';
-    return 'N/A';
-  }
-
-  private getApplicationId(url: string): string | null {
-    const envSpecific = this.config.applicationIds.environmentSpecific[url];
-    return envSpecific || this.config.applicationIds.default || null;
-  }
-
-  private async loginToEnvironment(url: string, applicationId: string): Promise<{ cookies?: Record<string, string>; error?: string }> {
-    const payload = {
-      email: this.credentials.email,
-      password: this.credentials.password,
-      invitationToken: ""
-    };
+  private async loginToEnvironment(url: string, applicationId: string): Promise<{ success: boolean; error?: string }> {
+    const payload = { email: this.credentials.email, password: this.credentials.password, invitationToken: "" };
 
     for (const template of this.LOGIN_URL_TEMPLATES) {
       const loginUrl = template.replace('{url}', url);
-      
       try {
         const response = await fetch(loginUrl, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'frontegg-requested-application-id': applicationId,
-            'frontegg-source': 'login-box',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          },
+          headers: { 'Content-Type': 'application/json', 'frontegg-requested-application-id': applicationId },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(this.TIMEOUT)
+          signal: AbortSignal.timeout(this.TIMEOUT),
+          credentials: 'include' // Let browser handle cookies
         });
 
-        if (response.ok) {
-          // Extract cookies from response headers
-          const cookies: Record<string, string> = {};
-          const setCookieHeaders = response.headers.get('set-cookie');
-          if (setCookieHeaders) {
-            setCookieHeaders.split(',').forEach(cookie => {
-              const [nameValue] = cookie.split(';');
-              const [name, value] = nameValue.split('=');
-              if (name && value) {
-                cookies[name.trim()] = value.trim();
-              }
-            });
-          }
-          return { cookies };
-        }
+        if (response.ok) return { success: true };
+        if (response.status === 404) continue;
 
-        if (response.status === 404) {
-          continue; // Try next template
-        }
-
-        return { error: `HTTP ${response.status}: ${await response.text()}` };
+        const errorText = await response.text();
+        return { success: false, error: `Login failed with status ${response.status}: ${errorText}` };
       } catch (error) {
-        if (error instanceof Error && error.name === 'AbortError') {
-          return { error: 'Login timeout' };
-        }
-        continue; // Try next template
+        logService.warn(`Login attempt to ${loginUrl} failed.`, error);
+        continue;
       }
     }
-
-    return { error: 'All login attempts failed' };
+    return { success: false, error: 'All login attempts failed' };
+  }
+  
+  private async fetchWithCredentials(url: string, options: RequestInit = {}): Promise<Response> {
+    return fetch(url, { ...options, credentials: 'include', signal: AbortSignal.timeout(this.TIMEOUT) });
   }
 
-  private async checkLoginPageAvailability(url: string, cookies: Record<string, string>, namespace: string, cluster: string): Promise<{ status: 'Live' | 'Not Live'; duration: number }> {
+  private async checkLoginPageAvailability(url: string, namespace: string, cluster: string): Promise<{ status: 'Live' | 'Not Live'; duration: number }> {
     const startTime = Date.now();
-    
     try {
-      const response = await fetch(url, {
-        headers: this.buildCookieHeader(cookies),
-        signal: AbortSignal.timeout(this.TIMEOUT)
-      });
-
-      const duration = Date.now() - startTime;
-      const status = response.ok ? 'Live' : 'Not Live';
-      
-      return { status, duration };
+      const response = await this.fetchWithCredentials(url);
+      return { status: response.ok ? 'Live' : 'Not Live', duration: Date.now() - startTime };
     } catch (error) {
-      const duration = Date.now() - startTime;
-      return { status: 'Not Live', duration };
+      return { status: 'Not Live', duration: Date.now() - startTime };
     }
   }
 
-  private async getAuthToken(url: string, cookies: Record<string, string>, namespace: string, cluster: string): Promise<{ token?: string; status: 'Success' | 'Fail'; duration: number }> {
+  private async getAuthToken(url: string, namespace: string, cluster: string): Promise<{ token?: string; status: 'Success' | 'Fail'; duration: number }> {
     const startTime = Date.now();
-    const tokenUrl = `${url}/api/get-token`;
-
     try {
-      const response = await fetch(tokenUrl, {
-        headers: this.buildCookieHeader(cookies),
-        signal: AbortSignal.timeout(this.TIMEOUT)
-      });
-
+      const response = await this.fetchWithCredentials(`${url}/api/get-token`);
       const duration = Date.now() - startTime;
-
-      if (!response.ok) {
-        return { status: 'Fail', duration };
-      }
+      if (!response.ok) return { status: 'Fail', duration };
 
       const data = await response.json();
-      const token = data.token;
-
-      if (!token) {
-        return { status: 'Fail', duration };
-      }
-
-      return { token, status: 'Success', duration };
+      return { token: data.token, status: data.token ? 'Success' : 'Fail', duration };
     } catch (error) {
-      const duration = Date.now() - startTime;
-      return { status: 'Fail', duration };
+      return { status: 'Fail', duration: Date.now() - startTime };
     }
   }
 
-  private async getEnvironmentVersion(url: string, cookies: Record<string, string>): Promise<string> {
+  private async getEnvironmentVersion(url: string): Promise<string> {
     try {
-      const response = await fetch(`${url}/api/version`, {
-        headers: this.buildCookieHeader(cookies),
-        signal: AbortSignal.timeout(this.TIMEOUT)
-      });
-
+      const response = await this.fetchWithCredentials(`${url}/api/version`);
       if (response.ok) {
         const data = await response.json();
         return data.version || 'Unknown';
       }
     } catch (error) {
-      console.error(`Failed to get version for ${url}:`, error);
+      logService.warn(`Failed to get version for ${url}:`, error);
     }
     return 'Unknown';
   }
 
-  private async queryEnvironment(url: string, token: string, cookies: Record<string, string>, namespace: string, cluster: string): Promise<{ status: 'Success' | 'Fail'; queryTime: number; nlResult: string }> {
+  private async queryEnvironment(url: string, token: string, namespace: string, cluster: string): Promise<{ status: 'Success' | 'Fail'; queryTime: number; nlResult: string }> {
     const startTime = Date.now();
-    const queryUrl = `${url}${this.NEW_API_ENDPOINT}`;
-
     const payload = {
-      query: this.DEFAULT_QUESTION,
-      queryEn: "",
-      queriesHistorical: [],
-      evidence: "",
-      model: "azure-openai-gpt4o-2024-08-06",
-      applicationId: 1,
-      skipCacheSearch: true,
-      skipSchemaFiltering: true
+      query: this.DEFAULT_QUESTION, queryEn: "", queriesHistorical: [], evidence: "",
+      model: "azure-openai-gpt4o-2024-08-06", applicationId: 1, skipCacheSearch: true, skipSchemaFiltering: true
     };
-
     try {
-      const response = await fetch(queryUrl, {
+      const response = await this.fetchWithCredentials(`${url}${this.NEW_API_ENDPOINT}`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Token ${token}`,
-          'User-id': this.USER_ID,
-          'Content-Type': 'application/json',
-          'accept': 'application/json',
-          'correlation-id': this.generateCorrelationId(),
-          ...this.buildCookieHeader(cookies)
-        },
+        headers: { 'Authorization': `Token ${token}`, 'User-id': this.USER_ID, 'Content-Type': 'application/json', 'accept': 'application/json', 'correlation-id': this.generateCorrelationId() },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(this.TIMEOUT)
       });
 
       const duration = Date.now() - startTime;
       const queryTime = Math.round(duration / 1000);
-
-      if (!response.ok) {
-        return {
-          status: 'Fail',
-          queryTime,
-          nlResult: `HTTP Error: ${response.status}`
-        };
-      }
-
-      // Check if response time exceeded threshold
-      if (queryTime > this.QUERY_RESPONSE_THRESHOLD_S) {
-        return {
-          status: 'Fail',
-          queryTime,
-          nlResult: `Response time exceeded threshold (${this.QUERY_RESPONSE_THRESHOLD_S}s)`
-        };
-      }
+      
+      if (!response.ok) return { status: 'Fail', queryTime, nlResult: `HTTP Error: ${response.status}` };
+      if (queryTime > this.QUERY_RESPONSE_THRESHOLD_S) return { status: 'Fail', queryTime, nlResult: `Response time exceeded threshold (${this.QUERY_RESPONSE_THRESHOLD_S}s)` };
 
       const data = await response.json();
       const nlResult = data.nl_result || 'No answer found';
+      const isFailure = ["sorry, i didn't get that. please, try again.", "this request can't be processed because the limit for connected data was exceeded. please contact your administrator."].some(p => nlResult.toLowerCase().includes(p));
 
-      // Check for failure patterns in the response
-      const failurePatterns = [
-        "sorry, i didn't get that. please, try again.",
-        "this request can't be processed because the limit for connected data was exceeded. please contact your administrator."
-      ];
-
-      const isFailure = failurePatterns.some(pattern => 
-        nlResult.toLowerCase().includes(pattern)
-      );
-
-      return {
-        status: isFailure ? 'Fail' : 'Success',
-        queryTime,
-        nlResult
-      };
-
+      return { status: isFailure ? 'Fail' : 'Success', queryTime, nlResult };
     } catch (error) {
-      const duration = Date.now() - startTime;
-      const queryTime = Math.round(duration / 1000);
-
-      return {
-        status: 'Fail',
-        queryTime,
-        nlResult: error instanceof Error ? error.message : 'Unknown error'
-      };
+      return { status: 'Fail', queryTime: Math.round((Date.now() - startTime) / 1000), nlResult: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 
-  private buildCookieHeader(cookies: Record<string, string>): Record<string, string> {
-    const cookieString = Object.entries(cookies)
-      .map(([name, value]) => `${name}=${value}`)
-      .join('; ');
-    
-    return cookieString ? { 'Cookie': cookieString } : {};
-  }
-
-  private generateCorrelationId(): string {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
-  }
+  private generateCorrelationId = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8); return v.toString(16); });
 
   private async logToGroundcover(testType: string, url: string, status: string, namespace: string, cluster: string, duration: number, error?: string): Promise<void> {
     if (!this.groundcoverService) return;
 
-    const logData = {
+    await this.groundcoverService.sendLog({
       timestamp: new Date().toISOString(),
       content: `${testType} test for ${url}: ${status}${error ? ` - ${error}` : ''}`,
-      string_attributes: {
-        test_type: testType,
-        url,
-        status,
-        cluster: `${cluster}-gigaspaces-net`,
-        namespace,
-        gc_source_type: 'observability_report',
-        'k8s.pod.annotation.monitorLevel': 'critical'
-      },
-      float_attributes: {
-        duration_ms: duration
-      }
-    };
-
-    await this.groundcoverService.sendLog(logData);
+      string_attributes: { test_type: testType, url, status, cluster: `${cluster}-gigaspaces-net`, namespace, gc_source_type: 'observability_report', 'k8s.pod.annotation.monitorLevel': 'critical' },
+      float_attributes: { duration_ms: duration }
+    });
   }
 }
